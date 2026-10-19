@@ -21,9 +21,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "rf_queue.h"
 
 /* Variable declaration */
-extern report_buffer_t report_buff_a;
-extern report_buffer_t report_buff_b;
-extern rf_queue_t      rf_queue;
+extern bool f_dial_sw_init_ok;
+
+static bool rf_nkro_active = false;
 
 /* Host driver */
 static uint8_t rf_keyboard_leds(void);
@@ -32,20 +32,15 @@ static void    rf_send_nkro(report_nkro_t *report);
 static void    rf_send_mouse(report_mouse_t *report);
 static void    rf_send_extra(report_extra_t *report);
 
-const host_driver_t rf_host_driver = {rf_keyboard_leds, rf_send_keyboard, rf_send_nkro, rf_send_mouse, rf_send_extra};
-
-/* defined in rf.c */
-void clear_report_buffer(void);
-void uart_send_report(uint8_t report_type, uint8_t *report_buf, uint8_t report_size);
+host_driver_t rf_host_driver = {rf_keyboard_leds, rf_send_keyboard, rf_send_nkro, rf_send_mouse, rf_send_extra};
 
 /**
  * @brief Send or queue the RF report.
  *
  */
 static void send_or_queue(report_buffer_t *report) {
-    if (dev_info.rf_state == RF_CONNECT && rf_queue.is_empty()) {
-        uart_send_report(report->cmd, report->buffer, report->length);
-        report->repeat++;
+    if (f_dial_sw_init_ok && dev_info.link_mode != LINK_USB && dev_info.rf_state == RF_CONNECT && rf_queue.is_empty()) {
+        rf_send_buffered_report(report);
     } else {
         rf_queue.enqueue(report);
     }
@@ -69,8 +64,14 @@ static void uart_auto_nkey_send(uint8_t *now_bit_report, uint8_t size) {
     uint8_t change_mask, offset_mask;
     uint8_t key_code = 0;
 
-    bool f_byte_send = 0;
-    bool f_bit_send  = 0;
+    bool f_byte_send = !rf_nkro_active;
+    bool f_bit_send  = !rf_nkro_active;
+    if (!rf_nkro_active) {
+        memset(bytekb_report_buf, 0, sizeof(bytekb_report_buf));
+        memset(bitkb_report_buf, 0, sizeof(bitkb_report_buf));
+        memset(pre_bit_report, 0, sizeof(pre_bit_report));
+        rf_nkro_active = true;
+    }
 
     if (pre_bit_report[0] ^ now_bit_report[0]) {
         bytekb_report_buf[0] = now_bit_report[0];
@@ -117,13 +118,11 @@ static void uart_auto_nkey_send(uint8_t *now_bit_report, uint8_t size) {
     if (f_byte_send) {
         report_buffer_t rpt_byte = make_report_buffer(CMD_RPT_BYTE_KB, &bytekb_report_buf[0], 8);
         send_or_queue(&rpt_byte);
-        report_buff_a = rpt_byte;
     }
 
     if (f_bit_send) {
         report_buffer_t rpt_bit = make_report_buffer(CMD_RPT_BIT_KB, &bitkb_report_buf[0], 16);
         send_or_queue(&rpt_bit);
-        report_buff_b = rpt_bit;
     }
 }
 
@@ -132,26 +131,27 @@ static uint8_t rf_keyboard_leds(void) {
 }
 
 static void rf_send_keyboard(report_keyboard_t *report) {
-    clear_report_buffer();
+    if (rf_nkro_active) {
+        // Release the bitmap half before returning to 6KRO.
+        report_buffer_t empty_bit = {.cmd = CMD_RPT_BIT_KB, .length = 16};
+        send_or_queue(&empty_bit);
+        rf_nkro_active = false;
+    }
     report->reserved    = 0;
     report_buffer_t rpt = make_report_buffer(CMD_RPT_BYTE_KB, &report->mods, 8);
     send_or_queue(&rpt);
-    report_buff_a = rpt;
 }
 
 static void rf_send_nkro(report_nkro_t *report) {
-    clear_report_buffer();
-    uart_auto_nkey_send(&nkro_report->mods, 16); // only need 1 byte mod + 15 byte keys
+    uart_auto_nkey_send(&report->mods, 16); // only need 1 byte mod + 15 byte keys
 }
 
 static void rf_send_mouse(report_mouse_t *report) {
-    clear_report_buffer();
     report_buffer_t rpt = make_report_buffer(CMD_RPT_MS, &report->buttons, 5);
     send_or_queue(&rpt);
 }
 
 static void rf_send_extra_helper(uint8_t cmd, report_extra_t *report) {
-    clear_report_buffer();
     report_buffer_t rpt = make_report_buffer(cmd, (uint8_t *)(&report->usage), 2);
     send_or_queue(&rpt);
 }

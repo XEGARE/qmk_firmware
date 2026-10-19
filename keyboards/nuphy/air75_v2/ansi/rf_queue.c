@@ -34,10 +34,34 @@ static void clear_rf_queue(void) {
     queue_tail = 0;
 }
 
+// Make room by discarding an older state only when a newer state of that same
+// report type exists. This preserves the final key/button releases of every type.
+static bool discard_superseded_report(uint8_t incoming_cmd) {
+    for (uint8_t index = queue_tail; index != queue_head; index = (index + 1) % RF_QUEUE_SIZE) {
+        bool superseded = buffer_queue[index].cmd == incoming_cmd;
+        for (uint8_t later = (index + 1) % RF_QUEUE_SIZE; !superseded && later != queue_head; later = (later + 1) % RF_QUEUE_SIZE) {
+            superseded = buffer_queue[index].cmd == buffer_queue[later].cmd;
+        }
+        if (!superseded) continue;
+
+        uint8_t next = (index + 1) % RF_QUEUE_SIZE;
+        while (next != queue_head) {
+            buffer_queue[index] = buffer_queue[next];
+            index               = next;
+            next                = (next + 1) % RF_QUEUE_SIZE;
+        }
+        queue_head = index;
+        return true;
+    }
+    return false;
+}
+
 static bool enqueue_rf_report(report_buffer_t *report) {
     uint8_t next = (queue_head + 1) % RF_QUEUE_SIZE;
-    if (next == queue_tail) { // queue is full.
-        return false;
+    if (next == queue_tail) {
+        // The five RF report types guarantee a superseded entry in a full queue.
+        if (!discard_superseded_report(report->cmd)) return false;
+        next = (queue_head + 1) % RF_QUEUE_SIZE;
     }
     buffer_queue[queue_head] = *report;
     queue_head               = next;

@@ -32,3 +32,7 @@ typedef struct {
     bool (*is_empty)(void);
     void (*clear)(void);
 } rf_queue_t;
+
+extern const rf_queue_t rf_queue;
+
+void rf_send_buffered_report(report_buffer_t *report);
